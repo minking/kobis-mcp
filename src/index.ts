@@ -1,18 +1,10 @@
 #!/usr/bin/env node
-import 'dotenv/config';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import axios from 'axios';
 
 const server = new McpServer({ name: 'kobis-mcp', version: '1.0.0' });
 const BASE_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest';
-const MIN_INTERVAL_MS = 250;
-
-// 직렬 Promise 큐를 통한 안전한 동시성 제어 스로틀링
-let queue: Promise<void> = Promise.resolve();
-const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const throttleRequest = (): Promise<void> => (queue = queue.then(() => wait(MIN_INTERVAL_MS)));
 
 // 재사용 헬퍼 함수
 const fmtNum = (n: any, unit = '') => (n != null && n !== '' ? `${Number(n).toLocaleString()}${unit}` : '-');
@@ -26,31 +18,25 @@ async function fetchKobis(endpoint: string, params: Record<string, any>): Promis
   const key = process.env.KOBIS_API_KEY;
   if (!key) throw new Error('KOBIS_API_KEY 환경변수가 설정되지 않았습니다.');
 
-  for (let attempt = 0; attempt <= 2; attempt++) {
-    try {
-      await throttleRequest();
-      const { data } = await axios.get(`${BASE_URL}${endpoint}`, {
-        params: { key, ...params },
-        timeout: 10000,
-        headers: { 'User-Agent': 'kobis-mcp/1.0.0' }
-      });
-
-      // 영진위 API는 에러 시 HTTP 200과 함께 faultInfo 객체를 반환함
-      if (data?.faultInfo) {
-        throw new Error(`[KOBIS ${data.faultInfo.errorCode || 'ERROR'}] ${data.faultInfo.message}`);
-      }
-      return data;
-    } catch (err: any) {
-      const status = err.response?.status;
-      const retryable = status === 429 || status === 503 || err.code === 'ECONNABORTED';
-      if (retryable && attempt < 2) {
-        await wait((attempt + 1) * 1000);
-        continue;
-      }
-      throw err;
-    }
+  const searchParams = new URLSearchParams({ key });
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null) searchParams.set(k, String(v));
   }
-  throw new Error('영진위 API 요청 실패');
+
+  const res = await fetch(`${BASE_URL}${endpoint}?${searchParams}`, {
+    headers: { 'User-Agent': 'kobis-mcp/1.0.0' },
+    signal: AbortSignal.timeout(10000)
+  });
+
+  if (!res.ok) {
+    throw new Error(`KOBIS HTTP 오류: ${res.status} ${res.statusText}`);
+  }
+
+  const data: any = await res.json();
+  if (data?.faultInfo) {
+    throw new Error(`[KOBIS ${data.faultInfo.errorCode || 'ERROR'}] ${data.faultInfo.message}`);
+  }
+  return data;
 }
 
 function toolHandler<T>(fn: (args: T) => Promise<any>) {
@@ -285,7 +271,7 @@ server.tool(
   '영진위 오픈API 공통 코드(지역코드: 0105000000 등)를 조회합니다.',
   { comCode: z.string().default('0105000000').describe('조회할 상위 코드값 (지역코드: 0105000000)') },
   toolHandler(async ({ comCode }) => {
-    const raw = await fetchKobis('/code/searchCodeList.json', { comCode: comCode || '0105000000' });
+    const raw = await fetchKobis('/code/searchCodeList.json', { comCode });
     const list = raw?.codes || [];
     return {
       상위코드: comCode,
