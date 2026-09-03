@@ -5,51 +5,46 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import axios from 'axios';
 
-const server = new McpServer({
-  name: 'kobis-mcp',
-  version: '1.0.0',
-});
-
+const server = new McpServer({ name: 'kobis-mcp', version: '1.0.0' });
 const BASE_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest';
-const MIN_INTERVAL_MS = 250; // 연속 호출 간 최소 250ms 딜레이 유지 (초당 최대 4회)
+const MIN_INTERVAL_MS = 250;
 
-let lastRequestTime = 0;
+// 직렬 Promise 큐를 통한 안전한 동시성 제어 스로틀링
+let queue: Promise<void> = Promise.resolve();
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const throttleRequest = (): Promise<void> => (queue = queue.then(() => wait(MIN_INTERVAL_MS)));
 
-async function throttleRequest(): Promise<void> {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < MIN_INTERVAL_MS) {
-    await new Promise(r => setTimeout(r, MIN_INTERVAL_MS - elapsed));
-  }
-  lastRequestTime = Date.now();
-}
-
-function checkApiKey(): string {
-  const key = process.env.KOBIS_API_KEY || '';
-  if (!key) {
-    throw new Error('KOBIS_API_KEY 환경변수가 설정되지 않았습니다.');
-  }
-  return key;
-}
+// 재사용 헬퍼 함수
+const fmtNum = (n: any, unit = '') => (n != null && n !== '' ? `${Number(n).toLocaleString()}${unit}` : '-');
+const joinNames = (arr: any[], key: string) => arr?.map((x) => x[key]).filter(Boolean).join(', ') || '-';
+const pageSchema = {
+  curPage: z.string().optional().describe('페이지 번호 (기본 1)'),
+  itemPerPage: z.string().optional().describe('페이지당 건수 (기본 10)')
+};
 
 async function fetchKobis(endpoint: string, params: Record<string, any>): Promise<any> {
-  const key = checkApiKey();
-  const url = `${BASE_URL}${endpoint}`;
+  const key = process.env.KOBIS_API_KEY;
+  if (!key) throw new Error('KOBIS_API_KEY 환경변수가 설정되지 않았습니다.');
 
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
       await throttleRequest();
-      const res = await axios.get(url, {
+      const { data } = await axios.get(`${BASE_URL}${endpoint}`, {
         params: { key, ...params },
         timeout: 10000,
-        headers: { 'User-Agent': 'kobis-mcp/1.0.0 (Model Context Protocol)' }
+        headers: { 'User-Agent': 'kobis-mcp/1.0.0' }
       });
-      return res.data;
+
+      // 영진위 API는 에러 시 HTTP 200과 함께 faultInfo 객체를 반환함
+      if (data?.faultInfo) {
+        throw new Error(`[KOBIS ${data.faultInfo.errorCode || 'ERROR'}] ${data.faultInfo.message}`);
+      }
+      return data;
     } catch (err: any) {
       const status = err.response?.status;
       const retryable = status === 429 || status === 503 || err.code === 'ECONNABORTED';
       if (retryable && attempt < 2) {
-        await new Promise(r => setTimeout(r, (attempt + 1) * 1000));
+        await wait((attempt + 1) * 1000);
         continue;
       }
       throw err;
@@ -58,24 +53,17 @@ async function fetchKobis(endpoint: string, params: Record<string, any>): Promis
   throw new Error('영진위 API 요청 실패');
 }
 
-// 중복된 try-catch 및 MCP 응답 포맷 래퍼
 function toolHandler<T>(fn: (args: T) => Promise<any>) {
   return async (args: T) => {
     try {
-      const result = await fn(args);
-      return {
-        content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result, null, 2) }]
-      };
+      const res = await fn(args);
+      return { content: [{ type: 'text' as const, text: typeof res === 'string' ? res : JSON.stringify(res, null, 2) }] };
     } catch (err: any) {
-      return {
-        content: [{ type: 'text' as const, text: `오류: ${err.message || err}` }],
-        isError: true
-      };
+      return { content: [{ type: 'text' as const, text: `오류: ${err.message || err}` }], isError: true };
     }
   };
 }
 
-// 박스오피스 공통 포맷터
 function formatBoxOfficeItem(m: any, isWeekly = false) {
   const inten = Number(m.rankInten);
   return {
@@ -85,24 +73,15 @@ function formatBoxOfficeItem(m: any, isWeekly = false) {
     영화명: m.movieNm,
     영화코드: m.movieCd,
     개봉일: m.openDt,
-    ...(isWeekly
-      ? { 기간관객수: Number(m.audiCnt).toLocaleString() + '명' }
-      : {
-          당일관객수: Number(m.audiCnt).toLocaleString() + '명',
-          전일대비증감: Number(m.audiInten).toLocaleString() + '명 (' + m.audiChange + '%)'
-        }),
-    누적관객수: Number(m.audiAcc).toLocaleString() + '명',
-    당일매출액: Number(m.salesAmt).toLocaleString() + '원',
-    매출점유율: m.salesShare + '%',
-    누적매출액: Number(m.salesAcc).toLocaleString() + '원',
-    스크린수: Number(m.scrnCnt).toLocaleString() + '개',
-    ...(!isWeekly && { 상영횟수: Number(m.showCnt).toLocaleString() + '회' })
+    ...(isWeekly ? { 기간관객수: fmtNum(m.audiCnt, '명') } : { 당일관객수: fmtNum(m.audiCnt, '명'), 전일대비증감: `${fmtNum(m.audiInten, '명')} (${m.audiChange}%)` }),
+    누적관객수: fmtNum(m.audiAcc, '명'),
+    당일매출액: fmtNum(m.salesAmt, '원'),
+    매출점유율: `${m.salesShare}%`,
+    누적매출액: fmtNum(m.salesAcc, '원'),
+    스크린수: fmtNum(m.scrnCnt, '개'),
+    ...(!isWeekly && { 상영횟수: fmtNum(m.showCnt, '회') })
   };
 }
-
-// ============================================================================
-// 도구 등록 (9종)
-// ============================================================================
 
 // 1. 일별 박스오피스
 server.tool(
@@ -116,17 +95,10 @@ server.tool(
     wideAreaCd: z.string().optional().describe('지역코드')
   },
   toolHandler(async (params) => {
-    const raw = await fetchKobis('/boxoffice/searchDailyBoxOfficeList.json', {
-      ...params,
-      itemPerPage: params.itemPerPage || '10'
-    });
+    const raw = await fetchKobis('/boxoffice/searchDailyBoxOfficeList.json', { ...params, itemPerPage: params.itemPerPage || '10' });
     const data = raw?.boxOfficeResult;
     if (!data?.dailyBoxOfficeList) return raw;
-    return {
-      조회구분: data.boxofficeType || '일별 박스오피스',
-      조회일자: params.targetDt,
-      목록: data.dailyBoxOfficeList.map((m: any) => formatBoxOfficeItem(m, false))
-    };
+    return { 조회구분: data.boxofficeType || '일별 박스오피스', 조회일자: params.targetDt, 목록: data.dailyBoxOfficeList.map((m: any) => formatBoxOfficeItem(m, false)) };
   })
 );
 
@@ -143,18 +115,10 @@ server.tool(
     wideAreaCd: z.string().optional().describe('지역코드')
   },
   toolHandler(async (params) => {
-    const raw = await fetchKobis('/boxoffice/searchWeeklyBoxOfficeList.json', {
-      ...params,
-      weekGb: params.weekGb || '1',
-      itemPerPage: params.itemPerPage || '10'
-    });
+    const raw = await fetchKobis('/boxoffice/searchWeeklyBoxOfficeList.json', { ...params, weekGb: params.weekGb || '1', itemPerPage: params.itemPerPage || '10' });
     const data = raw?.boxOfficeResult;
     if (!data?.weeklyBoxOfficeList) return raw;
-    return {
-      조회구분: data.boxofficeType || '주간/주말 박스오피스',
-      조회기간: data.showRange,
-      목록: data.weeklyBoxOfficeList.map((m: any) => formatBoxOfficeItem(m, true))
-    };
+    return { 조회구분: data.boxofficeType || '주간/주말 박스오피스', 조회기간: data.showRange, 목록: data.weeklyBoxOfficeList.map((m: any) => formatBoxOfficeItem(m, true)) };
   })
 );
 
@@ -171,15 +135,10 @@ server.tool(
     prdtEndYear: z.string().optional().describe('제작연도 끝 (YYYY)'),
     repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분'),
     movieTypeCd: z.string().optional().describe('영화형태'),
-    curPage: z.string().optional().describe('페이지 번호 (기본 1)'),
-    itemPerPage: z.string().optional().describe('페이지당 건수 (기본 10)')
+    ...pageSchema
   },
   toolHandler(async (params) => {
-    const raw = await fetchKobis('/movie/searchMovieList.json', {
-      ...params,
-      curPage: params.curPage || '1',
-      itemPerPage: params.itemPerPage || '10'
-    });
+    const raw = await fetchKobis('/movie/searchMovieList.json', { ...params, curPage: params.curPage || '1', itemPerPage: params.itemPerPage || '10' });
     const data = raw?.movieListResult;
     const list = data?.movieList || [];
     return {
@@ -192,8 +151,8 @@ server.tool(
         개봉일: m.openDt,
         유형: m.typeNm,
         장르: m.genreAlt,
-        감독: m.directors?.map((d: any) => d.peopleNm).join(', ') || '-',
-        제작사: m.companys?.map((c: any) => c.companyNm).join(', ') || '-'
+        감독: joinNames(m.directors, 'peopleNm'),
+        제작사: joinNames(m.companys, 'companyNm')
       }))
     };
   })
@@ -203,9 +162,7 @@ server.tool(
 server.tool(
   'get_movie_detail',
   '영화코드(movieCd)로 상영시간, 관람등급, 장르, 감독, 주요배우, 배급사, 제작사 등 상세 정보를 조회합니다.',
-  {
-    movieCd: z.string().describe('영화코드 (8자리 영진위 고유 코드)')
-  },
+  { movieCd: z.string().describe('영화코드 (8자리 영진위 고유 코드)') },
   toolHandler(async ({ movieCd }) => {
     const raw = await fetchKobis('/movie/searchMovieInfo.json', { movieCd });
     const info = raw?.movieInfoResult?.movieInfo;
@@ -218,12 +175,12 @@ server.tool(
       상영시간: info.showTm ? `${info.showTm}분` : '-',
       제작연도: info.prdtYear,
       개봉일: info.openDt,
-      장르: info.genres?.map((g: any) => g.genreNm).join(', ') || '-',
-      감독: info.directors?.map((d: any) => d.peopleNm).join(', ') || '-',
+      장르: joinNames(info.genres, 'genreNm'),
+      감독: joinNames(info.directors, 'peopleNm'),
       주요배우: info.actors?.slice(0, 8).map((a: any) => `${a.peopleNm}(${a.cast || '배역'})`).join(', ') || '-',
-      관람등급: info.audits?.map((a: any) => a.watchGradeNm).join(', ') || '-',
-      배급사: info.companys?.filter((c: any) => c.companyPartNm === '배급사').map((c: any) => c.companyNm).join(', ') || '-',
-      제작사: info.companys?.filter((c: any) => c.companyPartNm === '제작사').map((c: any) => c.companyNm).join(', ') || '-'
+      관람등급: joinNames(info.audits, 'watchGradeNm'),
+      배급사: joinNames(info.companys?.filter((c: any) => c.companyPartNm === '배급사'), 'companyNm'),
+      제작사: joinNames(info.companys?.filter((c: any) => c.companyPartNm === '제작사'), 'companyNm')
     };
   })
 );
@@ -236,15 +193,10 @@ server.tool(
     companyNm: z.string().optional().describe('영화사명 키워드'),
     ceoNm: z.string().optional().describe('대표자명'),
     companyPartCd: z.string().optional().describe('분류코드 (제작사, 배급사, 상영업 등)'),
-    curPage: z.string().optional().describe('페이지 번호 (기본 1)'),
-    itemPerPage: z.string().optional().describe('페이지당 건수 (기본 10)')
+    ...pageSchema
   },
   toolHandler(async (params) => {
-    const raw = await fetchKobis('/company/searchCompanyList.json', {
-      ...params,
-      curPage: params.curPage || '1',
-      itemPerPage: params.itemPerPage || '10'
-    });
+    const raw = await fetchKobis('/company/searchCompanyList.json', { ...params, curPage: params.curPage || '1', itemPerPage: params.itemPerPage || '10' });
     const list = raw?.companyListResult?.companyList || [];
     return {
       총검색건수: raw?.companyListResult?.totCnt || list.length,
@@ -264,9 +216,7 @@ server.tool(
 server.tool(
   'get_company_detail',
   '영화사코드(companyCd)로 영화사의 대표자명, 참여업종, 전체 필모그래피 목록을 조회합니다.',
-  {
-    companyCd: z.string().describe('영화사코드 (8자리 코드)')
-  },
+  { companyCd: z.string().describe('영화사코드 (8자리 코드)') },
   toolHandler(async ({ companyCd }) => {
     const raw = await fetchKobis('/company/searchCompanyInfo.json', { companyCd });
     const info = raw?.companyInfoResult?.companyInfo;
@@ -276,13 +226,9 @@ server.tool(
       영화사명: info.companyNm,
       영문명: info.companyNmEn || '-',
       대표자명: info.ceoNm || '-',
-      참여업종: info.parts?.map((p: any) => p.companyPartNm).join(', ') || '-',
-      총참여작품수: info.filmos ? `${info.filmos.length}편` : '0편',
-      주요작품목록: info.filmos?.slice(0, 15).map((f: any) => ({
-        영화코드: f.movieCd,
-        영화명: f.movieNm,
-        참여역할: f.companyPartNm
-      })) || []
+      참여업종: joinNames(info.parts, 'companyPartNm'),
+      총참여작품수: `${info.filmos?.length || 0}편`,
+      주요작품목록: info.filmos?.slice(0, 15).map((f: any) => ({ 영화코드: f.movieCd, 영화명: f.movieNm, 참여역할: f.companyPartNm })) || []
     };
   })
 );
@@ -294,15 +240,10 @@ server.tool(
   {
     peopleNm: z.string().optional().describe('영화인 이름 (배우, 감독, 스태프 등)'),
     filmoNames: z.string().optional().describe('출연 또는 제작 참여 영화명'),
-    curPage: z.string().optional().describe('페이지 번호 (기본 1)'),
-    itemPerPage: z.string().optional().describe('페이지당 건수 (기본 10)')
+    ...pageSchema
   },
   toolHandler(async (params) => {
-    const raw = await fetchKobis('/people/searchPeopleList.json', {
-      ...params,
-      curPage: params.curPage || '1',
-      itemPerPage: params.itemPerPage || '10'
-    });
+    const raw = await fetchKobis('/people/searchPeopleList.json', { ...params, curPage: params.curPage || '1', itemPerPage: params.itemPerPage || '10' });
     const list = raw?.peopleListResult?.peopleList || [];
     return {
       총검색건수: raw?.peopleListResult?.totCnt || list.length,
@@ -321,9 +262,7 @@ server.tool(
 server.tool(
   'get_people_detail',
   '영화인코드(peopleCd)로 해당 인물(감독/배우)의 성별, 분야, 전체 필모그래피 목록을 조회합니다.',
-  {
-    peopleCd: z.string().describe('영화인코드 (8자리 코드)')
-  },
+  { peopleCd: z.string().describe('영화인코드 (8자리 코드)') },
   toolHandler(async ({ peopleCd }) => {
     const raw = await fetchKobis('/people/searchPeopleInfo.json', { peopleCd });
     const info = raw?.peopleInfoResult?.peopleInfo;
@@ -334,12 +273,8 @@ server.tool(
       영문명: info.peopleNmEn || '-',
       성별: info.sex || '-',
       대표분야: info.repRoleNm || '-',
-      총참여작품수: info.filmos ? `${info.filmos.length}편` : '0편',
-      필모그래피: info.filmos?.map((f: any) => ({
-        영화코드: f.movieCd,
-        영화명: f.movieNm,
-        담당역할: f.moviePartNm
-      })) || []
+      총참여작품수: `${info.filmos?.length || 0}편`,
+      필모그래피: info.filmos?.map((f: any) => ({ 영화코드: f.movieCd, 영화명: f.movieNm, 담당역할: f.moviePartNm })) || []
     };
   })
 );
@@ -348,22 +283,14 @@ server.tool(
 server.tool(
   'get_code_list',
   '영진위 오픈API 공통 코드(지역코드: 0105000000 등)를 조회합니다.',
-  {
-    comCode: z.string().default('0105000000').describe('조회할 상위 코드값 (지역코드: 0105000000)')
-  },
+  { comCode: z.string().default('0105000000').describe('조회할 상위 코드값 (지역코드: 0105000000)') },
   toolHandler(async ({ comCode }) => {
-    const raw = await fetchKobis('/code/searchCodeList.json', {
-      comCode: comCode || '0105000000'
-    });
+    const raw = await fetchKobis('/code/searchCodeList.json', { comCode: comCode || '0105000000' });
     const list = raw?.codes || [];
     return {
       상위코드: comCode,
       총건수: list.length,
-      코드목록: list.map((c: any) => ({
-        코드값: c.fullCd,
-        코드명: c.korNm,
-        영문명: c.engNm || '-'
-      }))
+      코드목록: list.map((c: any) => ({ 코드값: c.fullCd, 코드명: c.korNm, 영문명: c.engNm || '-' }))
     };
   })
 );
@@ -371,3 +298,4 @@ server.tool(
 // Stdio 연결
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
