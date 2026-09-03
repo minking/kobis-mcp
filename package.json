@@ -2,13 +2,15 @@
   "name": "kobis-mcp",
   "version": "1.4.0",
   "description": "Unofficial KOBIS (영화진흥위원회 영화관입장권통합전산망) OpenAPI Model Context Protocol (MCP) Server",
-  "main": "index.js",
+  "main": "dist/index.js",
   "type": "module",
   "bin": {
-    "kobis-mcp": "./index.js"
+    "kobis-mcp": "dist/index.js"
   },
   "scripts": {
-    "start": "node index.js"
+    "build": "tsc",
+    "prepare": "npm run build",
+    "start": "node dist/index.js"
   },
   "keywords": [
     "mcp",
@@ -30,5 +32,12 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/minking/kobis-mcp.git"
-  }
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist"
+  ]
 }

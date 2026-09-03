@@ -15,20 +15,17 @@ const server = new McpServer({
 });
 
 // ============================================================================
-// 영진위 오픈API 규약 준수: 
-// 1) 1일 3,000회 제한 방어 (Quota & Smart Cache)
-// 2) 초당 호출 빈도 제한 (Rate Throttling: 최소 250ms 간격, 초당 최대 4회)
-// 3) 네트워크 일시 장애 및 429(Too Many Requests) 지수 백오프 자동 재시도
+// 영진위 오픈API 규약 준수 & 안전 방어 시스템
 // ============================================================================
 const BASE_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest';
 const CACHE_DIR = path.join(os.homedir(), '.kobis-cache');
 const QUOTA_FILE = path.join(CACHE_DIR, 'quota.json');
-const MAX_DAILY_CALLS = 2950; // 영진위 1일 3,000회 제한 중 안전 마진 50회 확보
-const MIN_INTERVAL_MS = 250;  // 초당 최대 4회로 연속 급증 호출 제한
+const MAX_DAILY_CALLS = 2950;
+const MIN_INTERVAL_MS = 250;
 
 let lastRequestTime = 0;
 
-async function throttleRequest() {
+async function throttleRequest(): Promise<void> {
   const now = Date.now();
   const timeSinceLast = now - lastRequestTime;
   if (timeSinceLast < MIN_INTERVAL_MS) {
@@ -38,13 +35,13 @@ async function throttleRequest() {
   lastRequestTime = Date.now();
 }
 
-function ensureCacheDir() {
+function ensureCacheDir(): void {
   if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
   }
 }
 
-function getTodayString() {
+function getTodayString(): string {
   const now = new Date();
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
@@ -52,23 +49,28 @@ function getTodayString() {
   return `${y}-${m}-${d}`;
 }
 
-function getQuota() {
+interface QuotaData {
+  date: string;
+  count: number;
+}
+
+function getQuota(): QuotaData {
   ensureCacheDir();
   const today = getTodayString();
   if (fs.existsSync(QUOTA_FILE)) {
     try {
-      const data = JSON.parse(fs.readFileSync(QUOTA_FILE, 'utf8'));
+      const data: QuotaData = JSON.parse(fs.readFileSync(QUOTA_FILE, 'utf8'));
       if (data.date === today) {
         return data;
       }
     } catch (e) {}
   }
-  const init = { date: today, count: 0 };
+  const init: QuotaData = { date: today, count: 0 };
   fs.writeFileSync(QUOTA_FILE, JSON.stringify(init, null, 2), 'utf8');
   return init;
 }
 
-function checkAndIncrementQuota() {
+function checkAndIncrementQuota(): number {
   const quota = getQuota();
   if (quota.count >= MAX_DAILY_CALLS) {
     throw new Error(`[영진위 API 안전 리미터 작동] 오늘 영진위 1일 호출 한도(${quota.count}/${MAX_DAILY_CALLS}회)를 모두 소진했습니다. API 키 정지 방지를 위해 오늘 자정까지 추가 호출이 차단됩니다.`);
@@ -78,14 +80,14 @@ function checkAndIncrementQuota() {
   return quota.count;
 }
 
-function getCacheKey(endpoint, params) {
+function getCacheKey(endpoint: string, params: Record<string, any>): string {
   const cleanParams = { ...params };
   delete cleanParams.key;
   const str = endpoint + JSON.stringify(cleanParams);
   return crypto.createHash('md5').update(str).digest('hex');
 }
 
-function getFromCache(key, ttlSeconds = 86400 * 30) {
+function getFromCache<T = any>(key: string, ttlSeconds = 86400 * 30): T | null {
   ensureCacheDir();
   const file = path.join(CACHE_DIR, `${key}.json`);
   if (fs.existsSync(file)) {
@@ -93,20 +95,20 @@ function getFromCache(key, ttlSeconds = 86400 * 30) {
       const { timestamp, data } = JSON.parse(fs.readFileSync(file, 'utf8'));
       const age = (Date.now() - timestamp) / 1000;
       if (age < ttlSeconds) {
-        return data;
+        return data as T;
       }
     } catch (e) {}
   }
   return null;
 }
 
-function saveToCache(key, data) {
+function saveToCache(key: string, data: any): void {
   ensureCacheDir();
   const file = path.join(CACHE_DIR, `${key}.json`);
   fs.writeFileSync(file, JSON.stringify({ timestamp: Date.now(), data }), 'utf8');
 }
 
-function checkApiKey() {
+function checkApiKey(): string {
   const key = process.env.KOBIS_API_KEY || '';
   if (!key) {
     throw new Error('KOBIS_API_KEY가 설정되지 않았습니다. .env 파일이나 mcp_config.json에 영진위 API 키를 설정해주세요.');
@@ -114,8 +116,7 @@ function checkApiKey() {
   return key;
 }
 
-// 스마트 캐싱, 초당 속도 제어(Throttling), 재시도(Retry) 통합 실행기
-async function fetchKobis(endpoint, params, ttlSeconds = 86400 * 30) {
+async function fetchKobis(endpoint: string, params: Record<string, any>, ttlSeconds = 86400 * 30): Promise<{ data: any; fromCache: boolean }> {
   const cacheKey = getCacheKey(endpoint, params);
   const cached = getFromCache(cacheKey, ttlSeconds);
   if (cached) {
@@ -143,7 +144,7 @@ async function fetchKobis(endpoint, params, ttlSeconds = 86400 * 30) {
         saveToCache(cacheKey, res.data);
       }
       return { data: res.data, fromCache: false };
-    } catch (err) {
+    } catch (err: any) {
       const status = err.response?.status;
       const isRetryable = status === 429 || status === 503 || err.code === 'ECONNABORTED';
       if (isRetryable && attempt < retries) {
@@ -154,19 +155,20 @@ async function fetchKobis(endpoint, params, ttlSeconds = 86400 * 30) {
       throw err;
     }
   }
+  throw new Error('요청 실패');
 }
 
 // ============================================================================
-// 1. 일별 박스오피스 (Daily BoxOffice)
+// 1. 일별 박스오피스
 // ============================================================================
 server.tool(
   'get_daily_boxoffice',
-  '특정 일자(YYYYMMDD)의 박스오피스 순위, 당일 관객수, 누적 관객수, 매출액, 점유율, 스크린수 등을 조회합니다. (과거 일자는 자동 로컬 캐싱되어 API 할당량을 소모하지 않습니다)',
+  '특정 일자(YYYYMMDD)의 박스오피스 순위, 당일 관객수, 누적 관객수, 매출액, 점유율, 스크린수 등을 조회합니다. (과거 일자는 자동 로컬 캐싱 적용)',
   {
     targetDt: z.string().describe('조회 일자 (YYYYMMDD 형식, 예: 20260902)'),
     itemPerPage: z.string().optional().describe('조회 건수 (기본값 10, 최대 10)'),
-    multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부 (Y: 다양성, N: 상업영화, 미지정시 전체)'),
-    repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분 (K: 한국, F: 외국, 미지정시 전체)'),
+    multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부'),
+    repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분'),
     wideAreaCd: z.string().optional().describe('지역코드 (서울: 0105001 등)')
   },
   async ({ targetDt, itemPerPage, multiMovieYn, repNationCd, wideAreaCd }) => {
@@ -195,7 +197,7 @@ server.tool(
         조회구분: data.boxofficeType || '일별 박스오피스',
         조회일자: targetDt,
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환 (API 호출 0회 소모)' : `🌐 실시간 API 호출 (오늘 사용량: ${quota.count}/${MAX_DAILY_CALLS}회)`,
-        목록: data.dailyBoxOfficeList.map(m => ({
+        목록: data.dailyBoxOfficeList.map((m: any) => ({
           순위: Number(m.rank),
           순위변동: m.rankInten > 0 ? `▲${m.rankInten}` : (m.rankInten < 0 ? `▼${Math.abs(m.rankInten)}` : '-'),
           신규진입: m.rankOldAndNew === 'NEW' ? 'NEW' : '',
@@ -216,7 +218,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -226,14 +228,14 @@ server.tool(
 );
 
 // ============================================================================
-// 2. 주간/주말 박스오피스 (Weekly BoxOffice)
+// 2. 주간/주말 박스오피스
 // ============================================================================
 server.tool(
   'get_weekly_boxoffice',
   '특정 주(해당 주의 일요일 YYYYMMDD)의 주말(금~일) 또는 주간 박스오피스 순위, 관객수 및 매출액을 조회합니다. (자동 로컬 캐싱 적용)',
   {
     targetDt: z.string().describe('해당 주의 일요일 일자 (YYYYMMDD 형식, 예: 20260830)'),
-    weekGb: z.enum(['0', '1', '2']).default('1').describe('조회 기간 구분 (0: 주간(월~일), 1: 주말(금~일) [기본값], 2: 주중(월~목))'),
+    weekGb: z.enum(['0', '1', '2']).default('1').describe('0: 주간, 1: 주말 [기본값], 2: 주중'),
     itemPerPage: z.string().optional().describe('조회 건수 (기본값 10)'),
     multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부'),
     repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분'),
@@ -262,7 +264,7 @@ server.tool(
         조회구분: data.boxofficeType || '주간/주말 박스오피스',
         조회기간: data.showRange,
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환 (API 호출 0회 소모)' : `🌐 실시간 API 호출 (오늘 사용량: ${quota.count}/${MAX_DAILY_CALLS}회)`,
-        목록: data.weeklyBoxOfficeList.map(m => ({
+        목록: data.weeklyBoxOfficeList.map((m: any) => ({
           순위: Number(m.rank),
           순위변동: m.rankInten > 0 ? `▲${m.rankInten}` : (m.rankInten < 0 ? `▼${Math.abs(m.rankInten)}` : '-'),
           신규진입: m.rankOldAndNew === 'NEW' ? 'NEW' : '',
@@ -281,7 +283,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -291,7 +293,7 @@ server.tool(
 );
 
 // ============================================================================
-// 3. 영화 목록 검색 (Movie List Search)
+// 3. 영화 목록 검색
 // ============================================================================
 server.tool(
   'search_movie_list',
@@ -321,7 +323,7 @@ server.tool(
       const formatted = {
         총검색건수: data?.totCnt || list.length,
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환' : '🌐 실시간 API 호출',
-        목록: list.map(m => ({
+        목록: list.map((m: any) => ({
           영화코드: m.movieCd,
           영화명: m.movieNm,
           영문명: m.movieNmEn,
@@ -329,15 +331,15 @@ server.tool(
           개봉일: m.openDt,
           유형: m.typeNm,
           장르: m.genreAlt,
-          감독: m.directors?.map(d => d.peopleNm).join(', ') || '-',
-          제작사: m.companys?.map(c => c.companyNm).join(', ') || '-'
+          감독: m.directors?.map((d: any) => d.peopleNm).join(', ') || '-',
+          제작사: m.companys?.map((c: any) => c.companyNm).join(', ') || '-'
         }))
       };
 
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -347,7 +349,7 @@ server.tool(
 );
 
 // ============================================================================
-// 4. 영화 상세 정보 조회 (Movie Detail)
+// 4. 영화 상세 정보 조회
 // ============================================================================
 server.tool(
   'get_movie_detail',
@@ -374,19 +376,19 @@ server.tool(
         상영시간: info.showTm ? `${info.showTm}분` : '-',
         제작연도: info.prdtYear,
         개봉일: info.openDt,
-        장르: info.genres?.map(g => g.genreNm).join(', ') || '-',
-        감독: info.directors?.map(d => d.peopleNm).join(', ') || '-',
-        주요배우: info.actors?.slice(0, 8).map(a => `${a.peopleNm}(${a.cast || '배역'})`).join(', ') || '-',
-        관람등급: info.audits?.map(a => a.watchGradeNm).join(', ') || '-',
-        배급사: info.companys?.filter(c => c.companyPartNm === '배급사').map(c => c.companyNm).join(', ') || '-',
-        제작사: info.companys?.filter(c => c.companyPartNm === '제작사').map(c => c.companyNm).join(', ') || '-',
-        스태프요약: info.staffs?.slice(0, 5).map(s => `${s.staffRoleNm}: ${s.peopleNm}`).join(', ') || '-'
+        장르: info.genres?.map((g: any) => g.genreNm).join(', ') || '-',
+        감독: info.directors?.map((d: any) => d.peopleNm).join(', ') || '-',
+        주요배우: info.actors?.slice(0, 8).map((a: any) => `${a.peopleNm}(${a.cast || '배역'})`).join(', ') || '-',
+        관람등급: info.audits?.map((a: any) => a.watchGradeNm).join(', ') || '-',
+        배급사: info.companys?.filter((c: any) => c.companyPartNm === '배급사').map((c: any) => c.companyNm).join(', ') || '-',
+        제작사: info.companys?.filter((c: any) => c.companyPartNm === '제작사').map((c: any) => c.companyNm).join(', ') || '-',
+        스태프요약: info.staffs?.slice(0, 5).map((s: any) => `${s.staffRoleNm}: ${s.peopleNm}`).join(', ') || '-'
       };
 
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -396,7 +398,7 @@ server.tool(
 );
 
 // ============================================================================
-// 5. 영화사 목록 검색 (Company List)
+// 5. 영화사 목록 검색
 // ============================================================================
 server.tool(
   'search_company_list',
@@ -421,7 +423,7 @@ server.tool(
       const formatted = {
         총검색건수: data?.totCnt || list.length,
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환' : '🌐 실시간 API 호출',
-        목록: list.map(c => ({
+        목록: list.map((c: any) => ({
           영화사코드: c.companyCd,
           영화사명: c.companyNm,
           영문명: c.companyNmEn || '-',
@@ -434,7 +436,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -444,7 +446,7 @@ server.tool(
 );
 
 // ============================================================================
-// 6. 영화사 상세 정보 조회 (Company Detail)
+// 6. 영화사 상세 정보 조회
 // ============================================================================
 server.tool(
   'get_company_detail',
@@ -468,9 +470,9 @@ server.tool(
         영문명: info.companyNmEn || '-',
         대표자명: info.ceoNm || '-',
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환' : '🌐 실시간 API 호출',
-        참여업종: info.parts?.map(p => p.companyPartNm).join(', ') || '-',
+        참여업종: info.parts?.map((p: any) => p.companyPartNm).join(', ') || '-',
         총참여작품수: info.filmos ? `${info.filmos.length}편` : '0편',
-        주요작품목록: info.filmos?.slice(0, 15).map(f => ({
+        주요작품목록: info.filmos?.slice(0, 15).map((f: any) => ({
           영화코드: f.movieCd,
           영화명: f.movieNm,
           참여역할: f.companyPartNm
@@ -480,7 +482,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -490,7 +492,7 @@ server.tool(
 );
 
 // ============================================================================
-// 7. 영화인 목록 검색 (People List)
+// 7. 영화인 목록 검색
 // ============================================================================
 server.tool(
   'search_people_list',
@@ -514,7 +516,7 @@ server.tool(
       const formatted = {
         총검색건수: data?.totCnt || list.length,
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환' : '🌐 실시간 API 호출',
-        목록: list.map(p => ({
+        목록: list.map((p: any) => ({
           영화인코드: p.peopleCd,
           영화인명: p.peopleNm,
           영문명: p.peopleNmEn || '-',
@@ -526,7 +528,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -536,7 +538,7 @@ server.tool(
 );
 
 // ============================================================================
-// 8. 영화인 상세 정보 조회 (People Detail)
+// 8. 영화인 상세 정보 조회
 // ============================================================================
 server.tool(
   'get_people_detail',
@@ -562,7 +564,7 @@ server.tool(
         대표분야: info.repRoleNm || '-',
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환' : '🌐 실시간 API 호출',
         총참여작품수: info.filmos ? `${info.filmos.length}편` : '0편',
-        필모그래피: info.filmos?.map(f => ({
+        필모그래피: info.filmos?.map((f: any) => ({
           영화코드: f.movieCd,
           영화명: f.movieNm,
           담당역할: f.moviePartNm
@@ -572,7 +574,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -582,7 +584,7 @@ server.tool(
 );
 
 // ============================================================================
-// 9. 공통코드 조회 (Common Codes)
+// 9. 공통코드 조회
 // ============================================================================
 server.tool(
   'get_code_list',
@@ -601,7 +603,7 @@ server.tool(
         상위코드: comCode,
         총건수: list.length,
         캐시상태: fromCache ? '⚡ 로컬 캐시 반환' : '🌐 실시간 API 호출',
-        코드목록: list.map(c => ({
+        코드목록: list.map((c: any) => ({
           코드값: c.fullCd,
           코드명: c.korNm,
           영문명: c.engNm || '-'
@@ -611,7 +613,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
@@ -621,7 +623,7 @@ server.tool(
 );
 
 // ============================================================================
-// 10. 오늘 API 사용량 및 캐시 상태 조회 (Quota Status)
+// 10. 오늘 API 사용량 및 캐시 상태 조회
 // ============================================================================
 server.tool(
   'get_quota_status',
@@ -631,7 +633,7 @@ server.tool(
     try {
       ensureCacheDir();
       const quota = getQuota();
-      const files = fs.readdirSync(CACHE_DIR).filter(f => f.endsWith('.json') && f !== 'quota.json');
+      const files = fs.readdirSync(CACHE_DIR).filter((f: string) => f.endsWith('.json') && f !== 'quota.json');
       const remaining = Math.max(0, MAX_DAILY_CALLS - quota.count);
 
       const status = {
@@ -651,7 +653,7 @@ server.tool(
       return {
         content: [{ type: 'text', text: JSON.stringify(status, null, 2) }]
       };
-    } catch (err) {
+    } catch (err: any) {
       return {
         content: [{ type: 'text', text: `오류: ${err.message}` }],
         isError: true
