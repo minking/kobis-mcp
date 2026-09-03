@@ -7,11 +7,16 @@ const server = new McpServer({ name: 'kobis-mcp', version: '1.0.0' });
 const BASE_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest';
 
 // 재사용 헬퍼 함수
-const fmtNum = (n: any, unit = '') => (n != null && n !== '' ? `${Number(n).toLocaleString()}${unit}` : '-');
+const fmtNum = (n: any, unit = '') => {
+  if (n == null || n === '' || n === '-') return '-';
+  const clean = String(n).replace(/,/g, '').trim();
+  const num = Number(clean);
+  return Number.isNaN(num) ? String(n) : `${num.toLocaleString()}${unit}`;
+};
 const joinNames = (arr: any[], key: string) => arr?.map((x) => x[key]).filter(Boolean).join(', ') || '-';
 const pageSchema = {
-  curPage: z.string().optional().describe('페이지 번호 (기본 1)'),
-  itemPerPage: z.string().optional().describe('페이지당 건수 (기본 10)')
+  curPage: z.string().regex(/^\d+$/, '숫자만 입력 가능합니다').optional().describe('페이지 번호 (기본 1)'),
+  itemPerPage: z.string().regex(/^\d+$/, '숫자만 입력 가능합니다').optional().describe('페이지당 건수 (기본 10)')
 };
 
 async function fetchKobis(endpoint: string, params: Record<string, any>): Promise<any> {
