@@ -7,7 +7,7 @@ import axios from 'axios';
 
 const server = new McpServer({
   name: 'kobis-mcp',
-  version: '1.5.0',
+  version: '1.0.0',
 });
 
 const BASE_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest';
@@ -45,7 +45,7 @@ async function fetchKobis(endpoint: string, params: Record<string, any>): Promis
         params: { key, ...params },
         timeout: 10000,
         headers: {
-          'User-Agent': 'kobis-mcp/1.5.0 (Model Context Protocol)'
+          'User-Agent': 'kobis-mcp/1.0.0 (Model Context Protocol)'
         }
       });
       return res.data;
