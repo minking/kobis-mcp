@@ -55,7 +55,7 @@ KOBIS_API_KEY=your_kobis_api_key_here
   "mcpServers": {
     "kobis-mcp": {
       "command": "npx",
-      "args": ["-y", "github:사용자계정/kobis-mcp"],
+      "args": ["-y", "github:minking/kobis-mcp"],
       "env": {
         "KOBIS_API_KEY": "발급받은_키_입력"
       }

@@ -26,5 +26,9 @@
     "dotenv": "^16.4.7",
     "zod": "^3.24.2"
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/minking/kobis-mcp.git"
+  }
 }
