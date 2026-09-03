@@ -11,16 +11,32 @@ import crypto from 'crypto';
 
 const server = new McpServer({
   name: 'kobis-mcp',
-  version: '1.3.0',
+  version: '1.4.0',
 });
 
 // ============================================================================
-// 영진위 API 키 관리 및 일일 3,000회 호출 제한 & 캐시 시스템
+// 영진위 오픈API 규약 준수: 
+// 1) 1일 3,000회 제한 방어 (Quota & Smart Cache)
+// 2) 초당 호출 빈도 제한 (Rate Throttling: 최소 250ms 간격, 초당 최대 4회)
+// 3) 네트워크 일시 장애 및 429(Too Many Requests) 지수 백오프 자동 재시도
 // ============================================================================
 const BASE_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest';
 const CACHE_DIR = path.join(os.homedir(), '.kobis-cache');
 const QUOTA_FILE = path.join(CACHE_DIR, 'quota.json');
 const MAX_DAILY_CALLS = 2950; // 영진위 1일 3,000회 제한 중 안전 마진 50회 확보
+const MIN_INTERVAL_MS = 250;  // 초당 최대 4회로 연속 급증 호출 제한
+
+let lastRequestTime = 0;
+
+async function throttleRequest() {
+  const now = Date.now();
+  const timeSinceLast = now - lastRequestTime;
+  if (timeSinceLast < MIN_INTERVAL_MS) {
+    const waitMs = MIN_INTERVAL_MS - timeSinceLast;
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+  lastRequestTime = Date.now();
+}
 
 function ensureCacheDir() {
   if (!fs.existsSync(CACHE_DIR)) {
@@ -98,7 +114,7 @@ function checkApiKey() {
   return key;
 }
 
-// 스마트 캐싱 및 할당량 관리 래퍼
+// 스마트 캐싱, 초당 속도 제어(Throttling), 재시도(Retry) 통합 실행기
 async function fetchKobis(endpoint, params, ttlSeconds = 86400 * 30) {
   const cacheKey = getCacheKey(endpoint, params);
   const cached = getFromCache(cacheKey, ttlSeconds);
@@ -109,16 +125,35 @@ async function fetchKobis(endpoint, params, ttlSeconds = 86400 * 30) {
   const key = checkApiKey();
   checkAndIncrementQuota();
 
-  const res = await axios.get(`${BASE_URL}${endpoint}`, {
-    params: { key, ...params },
-    timeout: 10000
-  });
+  const url = `${BASE_URL}${endpoint}`;
+  const retries = 2;
 
-  if (res.data) {
-    saveToCache(cacheKey, res.data);
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      await throttleRequest();
+      const res = await axios.get(url, {
+        params: { key, ...params },
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'kobis-mcp/1.4.0 (Model Context Protocol)'
+        }
+      });
+
+      if (res.data) {
+        saveToCache(cacheKey, res.data);
+      }
+      return { data: res.data, fromCache: false };
+    } catch (err) {
+      const status = err.response?.status;
+      const isRetryable = status === 429 || status === 503 || err.code === 'ECONNABORTED';
+      if (isRetryable && attempt < retries) {
+        const backoffMs = (attempt + 1) * 1000;
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        continue;
+      }
+      throw err;
+    }
   }
-
-  return { data: res.data, fromCache: false };
 }
 
 // ============================================================================
@@ -138,7 +173,7 @@ server.tool(
     try {
       const todayStr = getTodayString().replace(/-/g, '');
       const isPast = targetDt < todayStr;
-      const ttl = isPast ? 86400 * 365 : 3600; // 과거 일자는 1년 캐싱, 당일은 1시간 캐싱
+      const ttl = isPast ? 86400 * 365 : 3600;
 
       const { data: raw, fromCache } = await fetchKobis('/boxoffice/searchDailyBoxOfficeList.json', {
         targetDt,
@@ -590,7 +625,7 @@ server.tool(
 // ============================================================================
 server.tool(
   'get_quota_status',
-  '오늘 하루 사용한 영진위 API 호출 횟수(최대 3,000회 제한 중 사용량), 잔여 호출 가능 횟수 및 로컬 캐시 상태를 조회합니다.',
+  '오늘 하루 사용한 영진위 API 호출 횟수(최대 3,000회 제한 중 사용량), 잔여 호출 가능 횟수, 속도 제한 규약 및 로컬 캐시 상태를 조회합니다.',
   {},
   async () => {
     try {
@@ -602,10 +637,12 @@ server.tool(
       const status = {
         기준일자: quota.date,
         일일호출한도: '3,000회/일',
-        안전임계한도: `${MAX_DAILY_CALLS}회`,
+        안전임계한도: `${MAX_DAILY_CALLS}회 (자동 차단 보호)`,
         오늘호출횟수: `${quota.count}회`,
         남은호출횟수: `${remaining}회`,
         할당량소진율: ((quota.count / MAX_DAILY_CALLS) * 100).toFixed(1) + '%',
+        속도제한규약: `최소 ${MIN_INTERVAL_MS}ms 간격 강제 (초당 최대 4회 스팸 방지)`,
+        장애대응: 'HTTP 429 / 503 발생 시 지수 백오프 자동 2회 재시도',
         로컬캐시항목수: `${files.length}개`,
         캐시저장경로: CACHE_DIR,
         안내: '이미 조회한 과거 박스오피스나 영화 정보는 로컬 캐시에서 즉시 반환되므로 API 호출 횟수가 차감되지 않습니다.'
