@@ -44,32 +44,10 @@ AI 에이전트(Antigravity, Claude Desktop, Cursor 등)에서 실시간 일별/
 
 ---
 
-## ⚙️ 설정 및 실행 방법
+## ⚙️ MCP 클라이언트 설정 (mcp_config.json)
 
-### 1. 환경변수 설정
-영진위 오픈API 포털(kobis.or.kr)에서 무료 발급받은 API 키를 `.env` 파일에 설정합니다:
-```env
-KOBIS_API_KEY=your_kobis_api_key_here
-```
+설정 파일에 아래 설정을 추가하여 즉시 사용합니다:
 
-### 2. MCP 클라이언트 설정 (`mcp_config.json`)
-
-#### 로컬 실행 시:
-```json
-{
-  "mcpServers": {
-    "kobis-mcp": {
-      "command": "node",
-      "args": ["C:/Users/choyc/.workspace/kobis-mcp/index.js"],
-      "env": {
-        "KOBIS_API_KEY": "발급받은_키_입력"
-      }
-    }
-  }
-}
-```
-
-#### 깃허브 배포 후 npx 원클릭 실행 시:
 ```json
 {
   "mcpServers": {
@@ -77,11 +55,9 @@ KOBIS_API_KEY=your_kobis_api_key_here
       "command": "npx",
       "args": ["-y", "github:minking/kobis-mcp"],
       "env": {
-        "KOBIS_API_KEY": "발급받은_키_입력"
+        "KOBIS_API_KEY": "영진위_발급_API키_입력"
       }
     }
   }
 }
 ```
-
----
