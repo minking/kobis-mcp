@@ -32,7 +32,7 @@ AI 에이전트(Antigravity, Claude Desktop, Cursor 등)에서 실시간 일별/
 | 도구명 | 설명 | 주요 파라미터 |
 |---|---|---|
 | **`get_daily_boxoffice`** | 특정 일자 일별 박스오피스 TOP 10 및 관객수/매출액 조회 *(과거 일자 자동 캐싱)* | `targetDt` (YYYYMMDD), `multiMovieYn`, `repNationCd`, `wideAreaCd` |
-| **`get_weekly_boxoffice`** | 주말(금~일) 또는 주간(월~일) 박스오피스 순위 및 관객수 조회 *(자동 캐싱)* | `targetDt` (일요일 YYYYMMDD), `weekGb` (0:주간, 1:주말, 2:주중) |
+| **`get_weekly_boxoffice`** | 주말(금-일) 또는 주간(월-일) 박스오피스 순위 및 관객수 조회 *(자동 캐싱)* | `targetDt` (일요일 YYYYMMDD), `weekGb` (0:주간, 1:주말, 2:주중) |
 | **`search_movie_list`** | 영화 제목, 감독명, 개봉/제작연도 키워드로 영화 목록 검색 | `movieNm`, `directorNm`, `openStartYear`, `openEndYear` |
 | **`get_movie_detail`** | 영화 코드로 상영시간, 관람등급, 감독, 출연진, 배급사 상세 조회 | `movieCd` (영진위 8자리 고유코드) |
 | **`search_company_list`** | 영화사(배급사, 제작사, 상영업)명 또는 대표자명 검색 | `companyNm`, `ceoNm`, `companyPartCd` |
@@ -85,11 +85,3 @@ KOBIS_API_KEY=your_kobis_api_key_here
 ```
 
 ---
-
-## 💬 사용 예시
-
-* *"어제 박스오피스 1~5위 관객수와 점유율 알려줘"*
-* *"오늘 영진위 API 몇 번 썼는지 사용량 확인해줘"*
-* *"영화 '오디세이' 상세 정보와 배급사 확인해줘"*
-* *"CJ CGV 영화사의 대표자랑 최근 배급/제작한 영화 목록 찾아줘"*
-* *"봉준호 감독의 전체 필모그래피 목록 보여줘"*
