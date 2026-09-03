@@ -1,0 +1,30 @@
+{
+  "name": "kobis-mcp",
+  "version": "1.0.0",
+  "description": "Unofficial KOBIS (영화진흥위원회 영화관입장권통합전산망) OpenAPI Model Context Protocol (MCP) Server",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "kobis-mcp": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "mcp",
+    "kobis",
+    "boxoffice",
+    "korean-film",
+    "antigravity",
+    "claude",
+    "cursor"
+  ],
+  "author": "",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "zod": "^3.24.2"
+  },
+  "license": "UNLICENSED"
+}
