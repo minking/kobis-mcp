@@ -96,20 +96,24 @@ test('toolHandler: 정상 결과 래핑 및 예외 발생 시 에러 포맷팅 �
   assert.equal(errorRes.content[0].text, '오류: KOBIS 인증 실패');
 });
 
-test('enqueue: 순차 동기화(Sequential Sync), 간격 보장 및 에러 격리 검증', async () => {
+test('enqueue: 순차 동기화(Sequential Sync), 응답 완료 후 간격 보장 및 에러 격리 검증', async () => {
   const executionOrder: number[] = [];
+  const timestamps: number[] = [];
   const start = Date.now();
 
-  // 1. 순차 실행 및 간격(70ms) 테스트
+  // 1. 순차 실행 및 이전 작업 완료(약 30ms) 후 간격(50ms) 대기 검증
   const p1 = enqueue(async () => {
     executionOrder.push(1);
+    timestamps.push(Date.now());
+    await new Promise((r) => setTimeout(r, 30));
     return 'first';
-  }, 70);
+  }, 50);
 
   const p2 = enqueue(async () => {
     executionOrder.push(2);
+    timestamps.push(Date.now());
     return 'second';
-  }, 70);
+  }, 50);
 
   const [r1, r2] = await Promise.all([p1, p2]);
   const elapsed = Date.now() - start;
@@ -117,9 +121,11 @@ test('enqueue: 순차 동기화(Sequential Sync), 간격 보장 및 에러 격�
   assert.equal(r1, 'first');
   assert.equal(r2, 'second');
   assert.deepEqual(executionOrder, [1, 2]);
-  assert.ok(elapsed >= 60, `순차 간격(약 70ms) 이상 소요되어야 함 (실제: ${elapsed}ms)`);
+  // p2는 p1 완료(30ms) 이후 50ms 대기 후 실행되므로 최소 75ms 이상 소요되어야 함
+  assert.ok(elapsed >= 75, `응답 완료 후 최소 간격 이상 소요되어야 함 (실제: ${elapsed}ms)`);
+  assert.ok(timestamps[1] - timestamps[0] >= 75, `두 번째 작업 시작은 첫 번째 작업 시작 + 실행시간 + 대기시간 이후여야 함`);
 
-  // 2. 에러 격리 테스트: 앞선 작업이 실패해도 다음 작업 정상 실행
+  // 2. 에러 격리 테스트: 앞선 작업이 실패해도 다음 작업 정상 실행 및 간격 보장
   const pError = enqueue(async () => {
     throw new Error('의도된 작업 실패');
   }, 10);

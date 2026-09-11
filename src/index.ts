@@ -8,19 +8,22 @@ import { z } from 'zod';
 const server = new McpServer({ name: 'kobis-mcp', version: '1.0.1' });
 const BASE_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest';
 
-// 순차 동기화 대기 큐 (응답 확인 + 최소 250ms 간격 보장)
+// 순차 동기화 대기 큐 (응답 완료 확인 + 최소 250ms 간격 보장)
 let queue: Promise<any> = Promise.resolve();
-let lastRequestTime = 0;
+let lastCompletedTime = 0;
 export const RATE_LIMIT_MS = 250;
 
 export function enqueue<T>(task: () => Promise<T>, intervalMs = RATE_LIMIT_MS): Promise<T> {
   const next = queue.then(async () => {
-    const elapsed = Date.now() - lastRequestTime;
+    const elapsed = Date.now() - lastCompletedTime;
     if (elapsed < intervalMs) {
       await new Promise((r) => setTimeout(r, intervalMs - elapsed));
     }
-    lastRequestTime = Date.now();
-    return await task();
+    try {
+      return await task();
+    } finally {
+      lastCompletedTime = Date.now();
+    }
   });
   queue = next.catch(() => {});
   return next;
