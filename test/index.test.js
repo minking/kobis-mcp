@@ -26,7 +26,7 @@ test('fmtNum: 숫자 포맷팅 및 방어 로직 검증', () => {
 test('joinNames: 객체 배열 이름 결합 및 fallback 검증', () => {
   assert.equal(joinNames([{ name: '홍길동' }, { name: '이순신' }], 'name'), '홍길동, 이순신');
   assert.equal(joinNames([], 'name'), '-');
-  assert.equal(joinNames(null as any, 'name'), '-');
+  assert.equal(joinNames(null, 'name'), '-');
 });
 
 test('targetDtSchema: YYYYMMDD 날짜 형식 검증', () => {
@@ -79,11 +79,11 @@ test('formatBoxOfficeItem: 일별 및 주간 데이터 포맷팅 검증', () => 
   const weeklyResult = formatBoxOfficeItem(mockWeekly, true);
   assert.equal(weeklyResult.순위변동, '▼1');
   assert.equal(weeklyResult.기간관객수, '150,000명');
-  assert.equal((weeklyResult as any).당일관객수, undefined);
+  assert.equal(weeklyResult.당일관객수, undefined);
 });
 
 test('toolHandler: 정상 결과 래핑 및 예외 발생 시 에러 포맷팅 검증', async () => {
-  const successHandler = toolHandler(async (x: { val: number }) => ({ result: x.val * 2 }));
+  const successHandler = toolHandler(async (x) => ({ result: x.val * 2 }));
   const successRes = await successHandler({ val: 5 });
   assert.equal(successRes.isError, undefined);
   assert.match(successRes.content[0].text, /"result": 10/);
@@ -97,8 +97,8 @@ test('toolHandler: 정상 결과 래핑 및 예외 발생 시 에러 포맷팅 �
 });
 
 test('enqueue: 순차 동기화(Sequential Sync), 응답 완료 후 간격 보장 및 에러 격리 검증', async () => {
-  const executionOrder: number[] = [];
-  const timestamps: number[] = [];
+  const executionOrder = [];
+  const timestamps = [];
   const start = Date.now();
 
   // 1. 순차 실행 및 이전 작업 완료(약 30ms) 후 간격(50ms) 대기 검증

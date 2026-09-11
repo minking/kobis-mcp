@@ -11,7 +11,7 @@
     "build": "tsc",
     "prepare": "npm run build",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test test/index.test.ts"
+    "test": "npm run build && node --test test/index.test.js"
   },
   "keywords": [
     "mcp",
