@@ -5,17 +5,25 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const server = new McpServer({ name: 'kobis-mcp', version: '1.0.0' });
+const server = new McpServer({ name: 'kobis-mcp', version: '1.0.1' });
 const BASE_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest';
 
-// 호출 간격 제한 (최소 250ms 보장)
-let nextAvailableTime = 0;
+// 순차 동기화 대기 큐 (응답 확인 + 최소 250ms 간격 보장)
+let queue: Promise<any> = Promise.resolve();
+let lastRequestTime = 0;
 export const RATE_LIMIT_MS = 250;
-export async function rateLimit(intervalMs = RATE_LIMIT_MS): Promise<void> {
-  const now = Date.now();
-  const wait = Math.max(0, nextAvailableTime - now);
-  nextAvailableTime = Math.max(now, nextAvailableTime) + intervalMs;
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+
+export function enqueue<T>(task: () => Promise<T>, intervalMs = RATE_LIMIT_MS): Promise<T> {
+  const next = queue.then(async () => {
+    const elapsed = Date.now() - lastRequestTime;
+    if (elapsed < intervalMs) {
+      await new Promise((r) => setTimeout(r, intervalMs - elapsed));
+    }
+    lastRequestTime = Date.now();
+    return await task();
+  });
+  queue = next.catch(() => {});
+  return next;
 }
 
 // 재사용 헬퍼 함수
@@ -35,27 +43,27 @@ async function fetchKobis(endpoint: string, params: Record<string, any>): Promis
   const key = process.env.KOBIS_API_KEY;
   if (!key) throw new Error('KOBIS_API_KEY 환경변수가 설정되지 않았습니다.');
 
-  await rateLimit();
+  return enqueue(async () => {
+    const searchParams = new URLSearchParams({ key });
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null) searchParams.set(k, String(v));
+    }
 
-  const searchParams = new URLSearchParams({ key });
-  for (const [k, v] of Object.entries(params)) {
-    if (v != null) searchParams.set(k, String(v));
-  }
+    const res = await fetch(`${BASE_URL}${endpoint}?${searchParams}`, {
+      headers: { 'User-Agent': 'kobis-mcp/1.0.1' },
+      signal: AbortSignal.timeout(10000)
+    });
 
-  const res = await fetch(`${BASE_URL}${endpoint}?${searchParams}`, {
-    headers: { 'User-Agent': 'kobis-mcp/1.0.0' },
-    signal: AbortSignal.timeout(10000)
+    if (!res.ok) {
+      throw new Error(`KOBIS HTTP 오류: ${res.status} ${res.statusText}`);
+    }
+
+    const data: any = await res.json();
+    if (data?.faultInfo) {
+      throw new Error(`[KOBIS ${data.faultInfo.errorCode || 'ERROR'}] ${data.faultInfo.message}`);
+    }
+    return data;
   });
-
-  if (!res.ok) {
-    throw new Error(`KOBIS HTTP 오류: ${res.status} ${res.statusText}`);
-  }
-
-  const data: any = await res.json();
-  if (data?.faultInfo) {
-    throw new Error(`[KOBIS ${data.faultInfo.errorCode || 'ERROR'}] ${data.faultInfo.message}`);
-  }
-  return data;
 }
 
 export function toolHandler<T>(fn: (args: T) => Promise<any>) {

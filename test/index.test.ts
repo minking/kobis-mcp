@@ -8,7 +8,7 @@ import {
   pageSchema,
   targetDtSchema,
   formatBoxOfficeItem,
-  rateLimit,
+  enqueue,
   toolHandler,
   RATE_LIMIT_MS
 } from '../dist/index.js';
@@ -96,13 +96,39 @@ test('toolHandler: 정상 결과 래핑 및 예외 발생 시 에러 포맷팅 �
   assert.equal(errorRes.content[0].text, '오류: KOBIS 인증 실패');
 });
 
-test('rateLimit: 호출 간격 제한 스케줄링 검증', async () => {
+test('enqueue: 순차 동기화(Sequential Sync), 간격 보장 및 에러 격리 검증', async () => {
+  const executionOrder: number[] = [];
   const start = Date.now();
-  // 100ms 테스트 간격으로 2회 연속 스케줄링
-  await Promise.all([
-    rateLimit(100),
-    rateLimit(100)
-  ]);
+
+  // 1. 순차 실행 및 간격(70ms) 테스트
+  const p1 = enqueue(async () => {
+    executionOrder.push(1);
+    return 'first';
+  }, 70);
+
+  const p2 = enqueue(async () => {
+    executionOrder.push(2);
+    return 'second';
+  }, 70);
+
+  const [r1, r2] = await Promise.all([p1, p2]);
   const elapsed = Date.now() - start;
-  assert.ok(elapsed >= 90, `최소 대기 시간(약 100ms) 이상 소요되어야 함 (실제: ${elapsed}ms)`);
+
+  assert.equal(r1, 'first');
+  assert.equal(r2, 'second');
+  assert.deepEqual(executionOrder, [1, 2]);
+  assert.ok(elapsed >= 60, `순차 간격(약 70ms) 이상 소요되어야 함 (실제: ${elapsed}ms)`);
+
+  // 2. 에러 격리 테스트: 앞선 작업이 실패해도 다음 작업 정상 실행
+  const pError = enqueue(async () => {
+    throw new Error('의도된 작업 실패');
+  }, 10);
+
+  const pSuccess = enqueue(async () => {
+    return '성공 복구';
+  }, 10);
+
+  await assert.rejects(pError, { message: '의도된 작업 실패' });
+  const successRes = await pSuccess;
+  assert.equal(successRes, '성공 복구');
 });
