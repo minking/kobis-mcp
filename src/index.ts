@@ -29,14 +29,6 @@ export function enqueue<T>(task: () => Promise<T>, intervalMs = RATE_LIMIT_MS): 
   return next;
 }
 
-// 재사용 헬퍼 함수
-export const fmtNum = (n: any, unit = '') => {
-  if (n == null || n === '' || n === '-') return '-';
-  const clean = String(n).replace(/,/g, '').trim();
-  const num = Number(clean);
-  return Number.isNaN(num) ? String(n) : `${num.toLocaleString()}${unit}`;
-};
-export const joinNames = (arr: any[], key: string) => arr?.map((x) => x[key]).filter(Boolean).join(', ') || '-';
 export const pageSchema = {
   curPage: z.string().regex(/^\d+$/, '숫자만 입력 가능합니다').optional().describe('페이지 번호 (기본 1)'),
   itemPerPage: z.string().regex(/^\d+$/, '숫자만 입력 가능합니다').optional().describe('페이지당 건수 (기본 10)')
@@ -49,7 +41,7 @@ async function fetchKobis(endpoint: string, params: Record<string, any>): Promis
   return enqueue(async () => {
     const searchParams = new URLSearchParams({ key });
     for (const [k, v] of Object.entries(params)) {
-      if (v != null) searchParams.set(k, String(v));
+      if (v != null && v !== '') searchParams.set(k, String(v));
     }
 
     const res = await fetch(`${BASE_URL}${endpoint}?${searchParams}`, {
@@ -80,237 +72,110 @@ export function toolHandler<T>(fn: (args: T) => Promise<any>) {
   };
 }
 
-export function formatBoxOfficeItem(m: any, isWeekly = false) {
-  const inten = Number(m.rankInten);
-  return {
-    순위: Number(m.rank),
-    순위변동: inten > 0 ? `▲${inten}` : inten < 0 ? `▼${Math.abs(inten)}` : '-',
-    신규진입: m.rankOldAndNew === 'NEW' ? 'NEW' : '',
-    영화명: m.movieNm,
-    영화코드: m.movieCd,
-    개봉일: m.openDt,
-    ...(isWeekly ? { 기간관객수: fmtNum(m.audiCnt, '명') } : { 당일관객수: fmtNum(m.audiCnt, '명'), 전일대비증감: `${fmtNum(m.audiInten, '명')} (${m.audiChange}%)` }),
-    누적관객수: fmtNum(m.audiAcc, '명'),
-    당일매출액: fmtNum(m.salesAmt, '원'),
-    매출점유율: `${m.salesShare}%`,
-    누적매출액: fmtNum(m.salesAcc, '원'),
-    스크린수: fmtNum(m.scrnCnt, '개'),
-    ...(!isWeekly && { 상영횟수: fmtNum(m.showCnt, '회') })
-  };
-}
-
 export const targetDtSchema = z.string().regex(/^\d{8}$/, 'YYYYMMDD 형식(8자리 숫자)이어야 합니다');
 
 // 1. 일별 박스오피스
 server.tool(
   'get_daily_boxoffice',
-  '특정 일자(YYYYMMDD)의 박스오피스 순위, 당일 관객수, 누적 관객수, 매출액, 점유율 등을 조회합니다.',
+  '특정 일자(YYYYMMDD)의 박스오피스 순위, 관객수, 매출액 등 순수 API 결과를 조회합니다.',
   {
     targetDt: targetDtSchema.describe('조회 일자 (YYYYMMDD 형식, 예: 20260902)'),
     itemPerPage: z.string().optional().describe('조회 건수 (기본값 10)'),
-    multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부'),
-    repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분'),
-    wideAreaCd: z.string().optional().describe('지역코드')
+    multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부 (Y: 다양성, N: 상업영화)'),
+    repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분 (K: 한국, F: 외국)'),
+    wideAreaCd: z.string().optional().describe('지역코드 (예: 0105001 서울, 0105002 경기 등. get_code_list로 확인)')
   },
-  toolHandler(async (params) => {
-    const raw = await fetchKobis('/boxoffice/searchDailyBoxOfficeList.json', { ...params, itemPerPage: params.itemPerPage || '10' });
-    const data = raw?.boxOfficeResult;
-    if (!data?.dailyBoxOfficeList) return raw;
-    return { 조회구분: data.boxofficeType || '일별 박스오피스', 조회일자: params.targetDt, 목록: data.dailyBoxOfficeList.map((m: any) => formatBoxOfficeItem(m, false)) };
-  })
+  toolHandler((params) => fetchKobis('/boxoffice/searchDailyBoxOfficeList.json', params))
 );
 
 // 2. 주간/주말 박스오피스
 server.tool(
   'get_weekly_boxoffice',
-  '특정 주(일요일 YYYYMMDD)의 주말(금-일) 또는 주간 박스오피스 순위, 관객수 및 매출액을 조회합니다.',
+  '특정 주(일요일 YYYYMMDD)의 주말(금-일) 또는 주간 박스오피스 순수 API 결과를 조회합니다.',
   {
     targetDt: targetDtSchema.describe('해당 주의 일요일 일자 (YYYYMMDD 형식, 예: 20260830)'),
-    weekGb: z.enum(['0', '1', '2']).default('1').describe('0: 주간(월-일), 1: 주말(금-일) [기본값], 2: 주중(월-목)'),
+    weekGb: z.enum(['0', '1', '2']).optional().describe('0: 주간(월-일), 1: 주말(금-일), 2: 주중(월-목)'),
     itemPerPage: z.string().optional().describe('조회 건수 (기본값 10)'),
-    multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부'),
-    repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분'),
-    wideAreaCd: z.string().optional().describe('지역코드')
+    multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부 (Y: 다양성, N: 상업영화)'),
+    repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분 (K: 한국, F: 외국)'),
+    wideAreaCd: z.string().optional().describe('지역코드 (예: 0105001 서울, 0105002 경기 등)')
   },
-  toolHandler(async (params) => {
-    const raw = await fetchKobis('/boxoffice/searchWeeklyBoxOfficeList.json', { ...params, weekGb: params.weekGb || '1', itemPerPage: params.itemPerPage || '10' });
-    const data = raw?.boxOfficeResult;
-    if (!data?.weeklyBoxOfficeList) return raw;
-    return { 조회구분: data.boxofficeType || '주간/주말 박스오피스', 조회기간: data.showRange, 목록: data.weeklyBoxOfficeList.map((m: any) => formatBoxOfficeItem(m, true)) };
-  })
+  toolHandler((params) => fetchKobis('/boxoffice/searchWeeklyBoxOfficeList.json', params))
 );
 
 // 3. 영화 목록 검색
 server.tool(
   'search_movie_list',
-  '영화 제목, 감독명, 제작연도, 개봉연도 키워드로 영화 목록 및 영화코드를 검색합니다.',
+  '영화 제목, 감독명, 제작연도, 개봉연도 키워드로 영화 목록 순수 API 결과를 검색합니다.',
   {
     movieNm: z.string().optional().describe('영화 제목 (키워드 검색)'),
     directorNm: z.string().optional().describe('감독명'),
-    openStartYear: z.string().optional().describe('개봉연도 시작 (YYYY)'),
-    openEndYear: z.string().optional().describe('개봉연도 끝 (YYYY)'),
+    openStartDt: z.string().optional().describe('개봉연도 시작 (YYYY 형식)'),
+    openEndDt: z.string().optional().describe('개봉연도 끝 (YYYY 형식)'),
     prdtStartYear: z.string().optional().describe('제작연도 시작 (YYYY)'),
     prdtEndYear: z.string().optional().describe('제작연도 끝 (YYYY)'),
-    repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분'),
-    movieTypeCd: z.string().optional().describe('영화형태'),
+    repNationCd: z.string().optional().describe('국적코드 (K: 한국, F: 외국 또는 공통코드 2204 국적코드)'),
+    movieTypeCd: z.string().optional().describe('영화형태 (예: 장편, 단편 등)'),
     ...pageSchema
   },
-  toolHandler(async (params) => {
-    const raw = await fetchKobis('/movie/searchMovieList.json', { ...params, curPage: params.curPage || '1', itemPerPage: params.itemPerPage || '10' });
-    const data = raw?.movieListResult;
-    const list = data?.movieList || [];
-    return {
-      총검색건수: data?.totCnt || list.length,
-      목록: list.map((m: any) => ({
-        영화코드: m.movieCd,
-        영화명: m.movieNm,
-        영문명: m.movieNmEn,
-        제작연도: m.prdtYear,
-        개봉일: m.openDt,
-        유형: m.typeNm,
-        장르: m.genreAlt,
-        감독: joinNames(m.directors, 'peopleNm'),
-        제작사: joinNames(m.companys, 'companyNm')
-      }))
-    };
-  })
+  toolHandler((params) => fetchKobis('/movie/searchMovieList.json', params))
 );
 
 // 4. 영화 상세 정보 조회
 server.tool(
   'get_movie_detail',
-  '영화코드(movieCd)로 상영시간, 관람등급, 장르, 감독, 주요배우, 배급사, 제작사 등 상세 정보를 조회합니다.',
-  { movieCd: z.string().describe('영화코드 (8자리 영진위 고유 코드)') },
-  toolHandler(async ({ movieCd }) => {
-    const raw = await fetchKobis('/movie/searchMovieInfo.json', { movieCd });
-    const info = raw?.movieInfoResult?.movieInfo;
-    if (!info) return raw;
-    return {
-      영화코드: info.movieCd,
-      영화명: info.movieNm,
-      영문명: info.movieNmEn,
-      원제: info.movieNmOg || '-',
-      상영시간: info.showTm ? `${info.showTm}분` : '-',
-      제작연도: info.prdtYear,
-      개봉일: info.openDt,
-      장르: joinNames(info.genres, 'genreNm'),
-      감독: joinNames(info.directors, 'peopleNm'),
-      주요배우: info.actors?.slice(0, 8).map((a: any) => `${a.peopleNm}(${a.cast || '배역'})`).join(', ') || '-',
-      관람등급: joinNames(info.audits, 'watchGradeNm'),
-      배급사: joinNames(info.companys?.filter((c: any) => c.companyPartNm === '배급사'), 'companyNm'),
-      제작사: joinNames(info.companys?.filter((c: any) => c.companyPartNm === '제작사'), 'companyNm')
-    };
-  })
+  '영화코드(movieCd)로 상영시간, 관람등급, 장르, 감독, 배우, 배급사, 제작사 등 순수 API 상세 정보를 조회합니다.',
+  { movieCd: z.string().describe('영화코드 (8자리 영진위 고유 코드, search_movie_list로 확인)') },
+  toolHandler((params) => fetchKobis('/movie/searchMovieInfo.json', params))
 );
 
 // 5. 영화사 목록 검색
 server.tool(
   'search_company_list',
-  '영화사 이름(companyNm)이나 대표자명으로 영화사 목록 및 고유코드를 검색합니다.',
+  '영화사 이름이나 대표자명으로 영화사 목록 순수 API 결과를 검색합니다.',
   {
     companyNm: z.string().optional().describe('영화사명 키워드'),
     ceoNm: z.string().optional().describe('대표자명'),
-    companyPartCd: z.string().optional().describe('분류코드 (제작사, 배급사, 상영업 등)'),
+    companyPartCd: z.string().optional().describe('분류코드 (제작사, 배급사 등. get_code_list로 확인)'),
     ...pageSchema
   },
-  toolHandler(async (params) => {
-    const raw = await fetchKobis('/company/searchCompanyList.json', { ...params, curPage: params.curPage || '1', itemPerPage: params.itemPerPage || '10' });
-    const list = raw?.companyListResult?.companyList || [];
-    return {
-      총검색건수: raw?.companyListResult?.totCnt || list.length,
-      목록: list.map((c: any) => ({
-        영화사코드: c.companyCd,
-        영화사명: c.companyNm,
-        영문명: c.companyNmEn || '-',
-        대표자명: c.ceoNm || '-',
-        분류: c.companyPartNames || '-',
-        대표필모그래피: c.filmoNames || '-'
-      }))
-    };
-  })
+  toolHandler((params) => fetchKobis('/company/searchCompanyList.json', params))
 );
 
 // 6. 영화사 상세 정보 조회
 server.tool(
   'get_company_detail',
-  '영화사코드(companyCd)로 영화사의 대표자명, 참여업종, 전체 필모그래피 목록을 조회합니다.',
-  { companyCd: z.string().describe('영화사코드 (8자리 코드)') },
-  toolHandler(async ({ companyCd }) => {
-    const raw = await fetchKobis('/company/searchCompanyInfo.json', { companyCd });
-    const info = raw?.companyInfoResult?.companyInfo;
-    if (!info) return raw;
-    return {
-      영화사코드: info.companyCd,
-      영화사명: info.companyNm,
-      영문명: info.companyNmEn || '-',
-      대표자명: info.ceoNm || '-',
-      참여업종: joinNames(info.parts, 'companyPartNm'),
-      총참여작품수: `${info.filmos?.length || 0}편`,
-      주요작품목록: info.filmos?.slice(0, 15).map((f: any) => ({ 영화코드: f.movieCd, 영화명: f.movieNm, 참여역할: f.companyPartNm })) || []
-    };
-  })
+  '영화사코드(companyCd)로 영화사의 대표자명, 업종, 전체 필모그래피 순수 API 상세 정보를 조회합니다.',
+  { companyCd: z.string().describe('영화사코드 (8자리 코드, search_company_list로 확인)') },
+  toolHandler((params) => fetchKobis('/company/searchCompanyInfo.json', params))
 );
 
 // 7. 영화인 목록 검색
 server.tool(
   'search_people_list',
-  '영화인 이름(peopleNm) 또는 출연/연출 영화명으로 영화인 목록 및 코드를 검색합니다.',
+  '영화인 이름 또는 참여 영화명으로 영화인 목록 순수 API 결과를 검색합니다.',
   {
     peopleNm: z.string().optional().describe('영화인 이름 (배우, 감독, 스태프 등)'),
     filmoNames: z.string().optional().describe('출연 또는 제작 참여 영화명'),
     ...pageSchema
   },
-  toolHandler(async (params) => {
-    const raw = await fetchKobis('/people/searchPeopleList.json', { ...params, curPage: params.curPage || '1', itemPerPage: params.itemPerPage || '10' });
-    const list = raw?.peopleListResult?.peopleList || [];
-    return {
-      총검색건수: raw?.peopleListResult?.totCnt || list.length,
-      목록: list.map((p: any) => ({
-        영화인코드: p.peopleCd,
-        영화인명: p.peopleNm,
-        영문명: p.peopleNmEn || '-',
-        대표역할: p.repRoleNm || '-',
-        대표필모그래피: p.filmoNames || '-'
-      }))
-    };
-  })
+  toolHandler((params) => fetchKobis('/people/searchPeopleList.json', params))
 );
 
 // 8. 영화인 상세 정보 조회
 server.tool(
   'get_people_detail',
-  '영화인코드(peopleCd)로 해당 인물(감독/배우)의 성별, 분야, 전체 필모그래피 목록을 조회합니다.',
-  { peopleCd: z.string().describe('영화인코드 (8자리 코드)') },
-  toolHandler(async ({ peopleCd }) => {
-    const raw = await fetchKobis('/people/searchPeopleInfo.json', { peopleCd });
-    const info = raw?.peopleInfoResult?.peopleInfo;
-    if (!info) return raw;
-    return {
-      영화인코드: info.peopleCd,
-      영화인명: info.peopleNm,
-      영문명: info.peopleNmEn || '-',
-      성별: info.sex || '-',
-      대표분야: info.repRoleNm || '-',
-      총참여작품수: `${info.filmos?.length || 0}편`,
-      필모그래피: info.filmos?.map((f: any) => ({ 영화코드: f.movieCd, 영화명: f.movieNm, 담당역할: f.moviePartNm })) || []
-    };
-  })
+  '영화인코드(peopleCd)로 해당 인물의 분야, 전체 필모그래피 순수 API 상세 정보를 조회합니다.',
+  { peopleCd: z.string().describe('영화인코드 (8자리 코드, search_people_list로 확인)') },
+  toolHandler((params) => fetchKobis('/people/searchPeopleInfo.json', params))
 );
 
 // 9. 공통코드 조회
 server.tool(
   'get_code_list',
-  '영진위 오픈API 공통 코드(지역코드: 0105000000 등)를 조회합니다.',
-  { comCode: z.string().default('0105000000').describe('조회할 상위 코드값 (지역코드: 0105000000)') },
-  toolHandler(async ({ comCode }) => {
-    const raw = await fetchKobis('/code/searchCodeList.json', { comCode });
-    const list = raw?.codes || [];
-    return {
-      상위코드: comCode,
-      총건수: list.length,
-      코드목록: list.map((c: any) => ({ 코드값: c.fullCd, 코드명: c.korNm, 영문명: c.engNm || '-' }))
-    };
-  })
+  '영진위 오픈API 공통 코드(지역코드: 0105000000, 영화구분: 220101, 영화유형: 220201 등) 순수 API 결과를 조회합니다.',
+  { comCode: z.string().describe('조회할 상위 코드값 (지역코드: 0105000000, 영화구분: 220101, 영화유형: 220201 등)') },
+  toolHandler((params) => fetchKobis('/code/searchCodeList.json', params))
 );
 
 // Stdio 연결: CLI로 직접 실행된 경우에만 연결
