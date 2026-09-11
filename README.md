@@ -1,8 +1,19 @@
 # kobis-mcp (Unofficial)
 
+[![CI](https://github.com/minking/kobis-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/minking/kobis-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 영화진흥위원회(KOBIS) 영화관입장권통합전산망 오픈API를 연동하는 비공식 MCP(Model Context Protocol) 서버입니다.
 
 > 안내: 본 프로젝트는 개인이 오픈API를 활용하기 위해 만든 비공식 도구이며, 데이터의 권리는 영화진흥위원회에 있습니다.
+
+---
+
+## 주요 특징
+
+- **보안 통신 (HTTPS)**: 영진위 오픈API와 전 구간 HTTPS 통신을 수행하여 API 키 및 전송 데이터를 안전하게 보호합니다.
+- **내장 Rate Limiter**: 영진위 API 정책에 맞춰 동시 요청 및 연속 호출 시 최소 250ms 간격을 자동으로 조절하여 안정적인 조회를 보장합니다.
+- **Zero-Dependency 검증**: 가볍고 빠른 내장 런타임을 유지하며, Node.js 기본 내장 테스트 러너(`node:test`)로 100% 검증됩니다.
 
 ---
 
@@ -24,19 +35,23 @@
 
 ## 호출 제한 및 정책
 
-- **호출 간격**: 연속 호출 시 최소 250ms 간격을 두고 요청합니다.
+- **호출 간격**: 내부 Rate Limiter가 적용되어 있어 다중 요청 시에도 최소 250ms 간격을 두고 안전하게 요청합니다.
 - **일일 한도**: 영진위 오픈API 무료 정책에 따라 1일 3,000회 제한이 적용됩니다.
 
 ---
 
 ## 설정 예시
 
+### Claude Desktop / Cursor / Antigravity
+
+안정적인 실행을 위해 특정 태그(예: `#v1.0.0`)를 지정하여 실행하는 것을 권장합니다.
+
 ```json
 {
   "mcpServers": {
     "kobis-mcp": {
       "command": "npx",
-      "args": ["-y", "github:minking/kobis-mcp"],
+      "args": ["-y", "github:minking/kobis-mcp#v1.0.0"],
       "env": {
         "KOBIS_API_KEY": "영진위_API_키"
       }
@@ -44,3 +59,11 @@
   }
 }
 ```
+
+> 최신 `main` 브랜치를 직접 실행하려면 `#v1.0.0` 태그를 생략하고 `"github:minking/kobis-mcp"`로 지정할 수 있습니다.
+
+---
+
+## 라이선스
+
+[MIT License](LICENSE) © 2026 minking

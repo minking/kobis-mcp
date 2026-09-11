@@ -1,20 +1,32 @@
 #!/usr/bin/env node
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
 const server = new McpServer({ name: 'kobis-mcp', version: '1.0.0' });
-const BASE_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest';
+const BASE_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest';
+
+// 호출 간격 제한 (최소 250ms 보장)
+let nextAvailableTime = 0;
+export const RATE_LIMIT_MS = 250;
+export async function rateLimit(intervalMs = RATE_LIMIT_MS): Promise<void> {
+  const now = Date.now();
+  const wait = Math.max(0, nextAvailableTime - now);
+  nextAvailableTime = Math.max(now, nextAvailableTime) + intervalMs;
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
 
 // 재사용 헬퍼 함수
-const fmtNum = (n: any, unit = '') => {
+export const fmtNum = (n: any, unit = '') => {
   if (n == null || n === '' || n === '-') return '-';
   const clean = String(n).replace(/,/g, '').trim();
   const num = Number(clean);
   return Number.isNaN(num) ? String(n) : `${num.toLocaleString()}${unit}`;
 };
-const joinNames = (arr: any[], key: string) => arr?.map((x) => x[key]).filter(Boolean).join(', ') || '-';
-const pageSchema = {
+export const joinNames = (arr: any[], key: string) => arr?.map((x) => x[key]).filter(Boolean).join(', ') || '-';
+export const pageSchema = {
   curPage: z.string().regex(/^\d+$/, '숫자만 입력 가능합니다').optional().describe('페이지 번호 (기본 1)'),
   itemPerPage: z.string().regex(/^\d+$/, '숫자만 입력 가능합니다').optional().describe('페이지당 건수 (기본 10)')
 };
@@ -22,6 +34,8 @@ const pageSchema = {
 async function fetchKobis(endpoint: string, params: Record<string, any>): Promise<any> {
   const key = process.env.KOBIS_API_KEY;
   if (!key) throw new Error('KOBIS_API_KEY 환경변수가 설정되지 않았습니다.');
+
+  await rateLimit();
 
   const searchParams = new URLSearchParams({ key });
   for (const [k, v] of Object.entries(params)) {
@@ -44,7 +58,7 @@ async function fetchKobis(endpoint: string, params: Record<string, any>): Promis
   return data;
 }
 
-function toolHandler<T>(fn: (args: T) => Promise<any>) {
+export function toolHandler<T>(fn: (args: T) => Promise<any>) {
   return async (args: T) => {
     try {
       const res = await fn(args);
@@ -55,7 +69,7 @@ function toolHandler<T>(fn: (args: T) => Promise<any>) {
   };
 }
 
-function formatBoxOfficeItem(m: any, isWeekly = false) {
+export function formatBoxOfficeItem(m: any, isWeekly = false) {
   const inten = Number(m.rankInten);
   return {
     순위: Number(m.rank),
@@ -74,12 +88,14 @@ function formatBoxOfficeItem(m: any, isWeekly = false) {
   };
 }
 
+export const targetDtSchema = z.string().regex(/^\d{8}$/, 'YYYYMMDD 형식(8자리 숫자)이어야 합니다');
+
 // 1. 일별 박스오피스
 server.tool(
   'get_daily_boxoffice',
   '특정 일자(YYYYMMDD)의 박스오피스 순위, 당일 관객수, 누적 관객수, 매출액, 점유율 등을 조회합니다.',
   {
-    targetDt: z.string().describe('조회 일자 (YYYYMMDD 형식, 예: 20260902)'),
+    targetDt: targetDtSchema.describe('조회 일자 (YYYYMMDD 형식, 예: 20260902)'),
     itemPerPage: z.string().optional().describe('조회 건수 (기본값 10)'),
     multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부'),
     repNationCd: z.enum(['K', 'F']).optional().describe('한국/외국 영화 구분'),
@@ -98,7 +114,7 @@ server.tool(
   'get_weekly_boxoffice',
   '특정 주(일요일 YYYYMMDD)의 주말(금-일) 또는 주간 박스오피스 순위, 관객수 및 매출액을 조회합니다.',
   {
-    targetDt: z.string().describe('해당 주의 일요일 일자 (YYYYMMDD 형식, 예: 20260830)'),
+    targetDt: targetDtSchema.describe('해당 주의 일요일 일자 (YYYYMMDD 형식, 예: 20260830)'),
     weekGb: z.enum(['0', '1', '2']).default('1').describe('0: 주간(월-일), 1: 주말(금-일) [기본값], 2: 주중(월-목)'),
     itemPerPage: z.string().optional().describe('조회 건수 (기본값 10)'),
     multiMovieYn: z.enum(['Y', 'N']).optional().describe('다양성 영화 여부'),
@@ -286,7 +302,13 @@ server.tool(
   })
 );
 
-// Stdio 연결
-const transport = new StdioServerTransport();
-await server.connect(transport);
+// Stdio 연결: CLI로 직접 실행된 경우에만 연결
+const isDirectRun = process.argv[1]
+  ? path.resolve(fileURLToPath(import.meta.url)).toLowerCase() === path.resolve(process.argv[1]).toLowerCase()
+  : false;
+
+if (isDirectRun && process.env.NODE_ENV !== 'test') {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
 
