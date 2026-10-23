@@ -6,8 +6,11 @@ import {
   pageSchema,
   targetDtSchema,
   enqueue,
+  createRateLimiter,
   toolHandler,
-  RATE_LIMIT_MS
+  RATE_LIMIT_MS,
+  TOOL_DEFS,
+  createServer
 } from '../dist/index.js';
 
 test('targetDtSchema: YYYYMMDD 날짜 형식 검증', () => {
@@ -84,4 +87,44 @@ test('enqueue: 순차 동기화(Sequential Sync), 응답 완료 후 간격 보�
   await assert.rejects(pError, { message: '의도된 작업 실패' });
   const successRes = await pSuccess;
   assert.equal(successRes, '성공 복구');
+});
+
+test('createRateLimiter: 인스턴스별 독립 큐 (stateless-safe 서버 팩토리 검증)', async () => {
+  const limiterA = createRateLimiter();
+  const limiterB = createRateLimiter();
+
+  // 두 리미터는 서로 다른 클로저 상태를 가지므로 독립적으로 동작해야 함
+  const order = [];
+  const a = limiterA.enqueue(async () => { order.push('a'); return 'a'; }, 0);
+  const b = limiterB.enqueue(async () => { order.push('b'); return 'b'; }, 0);
+  assert.deepEqual(await Promise.all([a, b]), ['a', 'b']);
+
+  // 기본 간격 상수 노출 확인
+  assert.equal(RATE_LIMIT_MS, 250);
+});
+
+test('TOOL_DEFS: 최신 스펙 도구 정의完整性 (title/outputSchema/annotations 구성)', () => {
+  assert.equal(TOOL_DEFS.length, 9);
+  for (const def of TOOL_DEFS) {
+    assert.ok(def.name && def.title && def.description, `${def.name}: title/description 필수`);
+    assert.ok(def.endpoint.startsWith('/'), `${def.name}: 엔드포인트 형식`);
+    // Strict Tools: 입력 스키마는 strict object (additionalProperties:false)
+    const jsonSchema = def.inputSchema.toJSONSchema({ io: 'input' });
+    assert.equal(jsonSchema.type, 'object', `${def.name}: inputSchema 타입`);
+    assert.equal(jsonSchema.additionalProperties, false, `${def.name}: strict 입력(additionalProperties:false)`);
+    // 출력 스키마 존재 (structuredContent 라운드트립 검증용)
+    const outSchema = def.outputSchema.toJSONSchema({ io: 'output' });
+    assert.equal(outSchema.type, 'object', `${def.name}: outputSchema 존재`);
+  }
+
+  const daily = TOOL_DEFS.find((t) => t.name === 'get_daily_boxoffice');
+  const dailyJson = daily.inputSchema.toJSONSchema({ io: 'input' });
+  assert.deepEqual(dailyJson.required, ['targetDt']);
+  assert.equal(dailyJson.properties.targetDt.pattern, '^\\d{8}$');
+});
+
+test('createServer: stateless 서버 팩토 — 독립 인스턴스 생성 가능', () => {
+  const s1 = createServer();
+  const s2 = createServer();
+  assert.ok(s1 !== s2, '서버 팩토리는 매 호출 새 인스턴스를 반환해야 함(HTTP stateless 배포 지원)');
 });
