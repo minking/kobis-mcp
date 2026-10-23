@@ -1,9 +1,12 @@
 {
   "name": "kobis-mcp",
-  "version": "1.0.1",
-  "description": "Unofficial KOBIS (영화진흥위원회 영화관입장권통합전산망) OpenAPI Model Context Protocol (MCP) Server",
+  "version": "2.0.0",
+  "description": "Unofficial KOBIS (영화진흥위원회 영화관입장권통합전산망) OpenAPI Model Context Protocol (MCP) Server — MCP protocol 2026-07-28 (stateless-first), official TypeScript SDK v2",
   "main": "dist/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "kobis-mcp": "dist/index.js"
   },
@@ -24,8 +27,8 @@
   ],
   "author": "minking",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.6.1",
-    "zod": "^3.24.2"
+    "@modelcontextprotocol/server": "^2.3.1",
+    "zod": "^4.6.7"
   },
   "license": "MIT",
   "repository": {
